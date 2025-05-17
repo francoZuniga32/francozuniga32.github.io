@@ -1,11 +1,17 @@
-import { defineConfig } from 'astro/config';
-import mdx from '@astrojs/mdx';
-import sitemap from '@astrojs/sitemap';
-import react from '@astrojs/react';
-import tailwind from "@astrojs/tailwind";
+import { defineConfig } from "astro/config";
+import sitemap from "@astrojs/sitemap";
+import tailwindcss from "@tailwindcss/vite";
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://example.com',
-  integrations: [mdx(), sitemap(), tailwind(), react()],
+  integrations: [sitemap()],
+  markdown: {
+    shikiConfig: {
+      theme: "dark-plus",
+    },
+  },
+  site: "https://barebones.superwebthemes.com",
+  vite: {
+    plugins: [tailwindcss()],
+  },
 });
