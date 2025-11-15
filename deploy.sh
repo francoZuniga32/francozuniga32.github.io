@@ -10,15 +10,15 @@ rm -r docs/
 
 mv dist/ docs/
 
-mv docs/_astro/ docs/astro/
+mv docs/astro/ docs/astro/
 
-# cambiamos /_astro/ por /astro/
+# cambiamos /astro/ por /astro/
 
 # Configura la carpeta donde están los archivos .html
 FOLDER_PATH="docs"
 
 # Cadena que deseas buscar
-SEARCH_STRING="/_astro/"
+SEARCH_STRING="/astro/"
 
 # Cadena con la que deseas reemplazar
 REPLACE_STRING="/astro/"
