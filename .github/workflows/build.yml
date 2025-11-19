@@ -1,0 +1,25 @@
+name: Build on push to main
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18  # o la versión que uses
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build project
+        run: ./deploy.sh
