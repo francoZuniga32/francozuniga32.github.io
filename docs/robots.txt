@@ -2,4 +2,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://barebones.superwebthemes.com/sitemap-index.xml
+Sitemap: https://francozuniga32.github.io/sitemap-index.xml
