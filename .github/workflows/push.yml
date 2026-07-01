@@ -3,6 +3,8 @@ run-name: "publicacion web"
 on: [push] 
 permissions:
   contents: write
+  actions: write
+  workflows: write
 jobs:
   build:
     runs-on: ubuntu-latest
