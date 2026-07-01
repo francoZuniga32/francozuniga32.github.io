@@ -17,16 +17,13 @@ jobs:
           npm run build
       - name: "Corregir nombres de carpetas y referencias (_astro -> astro)"
         run: |
-          # 1. Renombrar físicamente cualquier carpeta que empiece con "_" dentro de docs (ej. _astro -> astro)
-          # Buscamos directorios que empiecen con _ y los renombramos usando "mv"
-          find docs -type d -name "_*" | while read dir; do
-            nuevo_nombre=$(echo "$dir" | sed 's/\/_/\//g')
-            mv "$dir" "$nuevo_nombre"
-          done
+          # 1. Renombrar físicamente la carpeta _astro a astro (si existe)
+          if [ -d "docs/_astro" ]; then
+            mv docs/_astro docs/astro
+          fi
 
-          # 2. Reemplazar las referencias de texto dentro de TODOS los archivos procesados
-          # Esto busca "/_astro" y lo cambia por "/astro" en archivos html, js y css
-          find docs -type f \( -name "*.html" -o -name "*.js" -o -name "*.css" \) -exec sed -i 's/\/_/\//g' {} +
+          # 2. Reemplazar /_astro/ por /astro/ SOLO en los archivos .html
+          find docs -type f -name "*.html" -exec sed -i 's/\/_astro\//\/astro\//g' {} +
       - name: "Guardar cambios en docs"
         uses: peaceiris/actions-gh-pages@v3
         with:
