@@ -1,0 +1,5 @@
+
+User-agent: *
+Allow: /
+
+Sitemap: https://francozuniga32.github.io/sitemap-index.xml
