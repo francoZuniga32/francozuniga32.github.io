@@ -31,3 +31,8 @@ jobs:
             mv docs/_astro docs/astro
           fi
           find docs -type f -name "*.html" -exec sed -i 's/\/_astro\//\/astro\//g' {} +
+      - name: "Guardar cambios en docs"
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs 
