@@ -26,7 +26,7 @@ jobs:
         run: pnpm build
 
       - name: "Corregir nombres de carpetas y referencias (_astro -> astro)"
-        run: 
+        run: |
           if [ -d "docs/_astro" ]; then
             mv docs/_astro docs/astro
           fi
