@@ -8,28 +8,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      # 1. Descargar el código del repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Instalar pnpm (lee la versión declarada en package.json "packageManager" si existe)
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
           version: 9 # O la versión específica de pnpm que utilices
-      - name: "Instalar dependencias"
-        run: |
-          pnpm install
-      - name: "Construir proyecto"
-        run: |
-          pnpm build
-      - name: "Corregir nombres de carpetas y referencias (_astro -> astro)"
-        run: |
-          # 1. Renombrar físicamente la carpeta _astro a astro (si existe)
-          if [ -d "docs/_astro" ]; then
-            mv docs/_astro docs/astro
-          fi
 
-          # 2. Reemplazar /_astro/ por /astro/ SOLO en los archivos .html
-          find docs -type f -name "*.html" -exec sed -i 's/\/_astro\//\/astro\//g' {} +
-      - name: "Guardar cambios en docs"
-        uses: peaceiris/actions-gh-pages@v3
+      # 3. Configurar Node.js con caché de pnpm integrada
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs 
+          node-version: 20
+          cache: 'pnpm'
+
+      # 4. Instalar dependencias usando pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 5. Construir el proyecto Astro
+      - name: Build site
+        run: pnpm build
