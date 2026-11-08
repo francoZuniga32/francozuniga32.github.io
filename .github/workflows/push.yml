@@ -10,25 +10,24 @@ jobs:
     steps:
       # 1. Descargar el código del repositorio
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # 2. Instalar pnpm (lee la versión declarada en package.json "packageManager" si existe)
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/setup@v1
         with:
-          version: 9.15.0 # O la versión específica de pnpm que utilices
-
-      # 3. Configurar Node.js con caché de pnpm integrada
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-
-      # 4. Instalar dependencias usando pnpm-lock.yaml
+          version: 11
+          runtime: node@22
+          cache: true
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # 5. Construir el proyecto Astro
       - name: Build site
         run: pnpm build
+
+      - name: "Corregir nombres de carpetas y referencias (_astro -> astro)"
+        run: 
+          if [ -d "docs/_astro" ]; then
+            mv docs/_astro docs/astro
+          fi
+          find docs -type f -name "*.html" -exec sed -i 's/\/_astro\//\/astro\//g' {} +
