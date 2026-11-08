@@ -1,0 +1,1389 @@
+---
+title: 'Cluster HA'
+description: 'Configuracion de cluster de Alta Disponibilidad (High Availability) usando almalinux, pacemaker, corosync'
+publicationDate: 2026-11-01T00:00:00Z
+---
+
+> [!IMPORTANT]
+> Este documento esta en proceso
+
+Si bien existen muchas formas de configurar un cluster de alta disponibilidad, en este artículo vamos a ver una forma de hacerlo usando **AlmaLinux**, **Pacemaker** y **Corosync**.
+
+## Algunos conceptos de Clustering
+
+Un clustering es un conjunto de computadoras que en el caso de un cluster de HA (High Availability) tienen el objetivo de que si una de las maquinas falla, otra del cluster pueda remplazarla y continuar con el servicio ofrecido.
+En el caso de clustering de altas prestaciones (HPC) el objetivo es que varias maquinas puedan compartir el poder de computo entre si para poder resolver algun problema puntal, en este caso problemas que requieren mucho poder de computo.
+
+Algunas ideas puntuales:
+- **Tipos de Cluster**:
+  - Alta Disponibilidad: conjunto de nodos donde uno de ellos toma el rol de primario y los demas de secundario. en caso de que el primario caiga alguno de los demas nodos tomara su lugar.
+  - Balance Carga: conjunto de nodos donde todos los nodos son iguales y se reparten la carga entre ellos.
+  - Altas Prestaciones: conjunto de nodos que comparten el poder de computo entre ellos para resolver problemas que requieren mucho poder de computo.
+  - Almacenamiento: conjunto de nodos que comparten el almacenamiento entre ellos para poder ofrecer un almacenamiento distribuido y redundante.
+- Virtual IP: los servicios ofrecidos por el cluster tendran que ser accedidos por una IP flotante, que es una IP que puede estar en cualquiera de los nodos del cluster. esto permite que si un nodo cae, otro nodo pueda tomar la IP y continuar ofreciendo el servicio.
+- Almacenamiento Compartido:
+  - NAS: Network Attached Storage, es un almacenamiento compartido que se ofrece a traves de la red. los nodos del cluster pueden acceder a este almacenamiento para compartir archivos entre ellos.
+  - SAN: Storage Area Network, es un almacenamiento compartido que se ofrece a traves de una red de alta velocidad. los nodos del cluster pueden acceder a este almacenamiento para compartir archivos entre ellos.
+  - DAS: Direct Attached Storage, es un almacenamiento compartido que se ofrece a traves de una conexion directa. los nodos del cluster pueden acceder a este almacenamiento para compartir archivos entre ellos.
+- Heartbeat: es un servicio que permite a los nodos del cluster comunicarse entre ellos para saber si alguno de ellos esta caido o no. este servicio es ofrecido por corosync.
+- Failover: es el proceso de migracion de los servicios de un nodo caido a otro node del cluster.
+- Fancing: es el proceso de aislamiento de un nodo caido en el cluster.
+- Cuorum: es el numero minimo de nodos que tienen que estar activos para que el cluster tome deciciones sobre por ejemplo dar de baja un nodo en particular. esto es para evitar falsos positivos en la caida de un servicio.
+- STONITH: es un mecanimos de hardware que permite apagar un nodo del cluster, evidanto asi que aun asilado del cluster afecte por ejemplo a los discos compartidos o sature la red con mensajes de heartbeat.
+
+## Nuestro objetivo
+
+El objetivo de este laboratorio es configuara un cluster de HA usando dos maquinas virtuales. La idea es alojar un servidor web usando apache y replicando la informacion de la misma mediante DRBD.
+
+
+
+## Instalacion de almalinux
+
+Para esta prueba tenemos que tener dos maquinas virtuales corriendo almalinux en su ultima version (creo que van por la version 9.2).
+Una ves instaldo podremos proceder con los siguientes pasos.
+
+## Configuracion de las maquinas virtuales
+
+> Como objetivo de este laboratorio vamos a especificar los comandos que se tienen que ejecutar en las dos maquinas anteponiendo un # delante del hostaname. 
+> user@fz1 o user@fz2 dependiendo de la maquina en la que se este ejecutando el comando y user@fz# en caso de que se ejecuten en ambas
+
+
+1. configuramos el hostname de cada una de las maquinas
+
+```bash
+[user@fz1 ~]$ sudo hostnamectl set-hostname fz1
+```
+
+Es importante saber la configuracion de la red de cada una de las maquinas, como su direccion IP y mascara. es importante que estas direcciones no cambien.
+
+
+2. la configuracion de red es:
+
+para fz1:
+```bash
+[user@fz1 ~]$ ip addr
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether c2:c1:44:70:f8:11 brd ff:ff:ff:ff:ff:ff
+    altname enp0s18
+    inet 10.0.18.117/24 brd 10.0.18.255 scope global dynamic noprefixroute ens18
+       valid_lft 7048sec preferred_lft 7048sec
+    inet 10.0.18.142/24 brd 10.0.18.255 scope global secondary ens18
+       valid_lft forever preferred_lft forever
+    inet6 fe80::c0c1:44ff:fe70:f811/64 scope link noprefixroute 
+       valid_lft forever preferred_lft forever
+[user@fz1 ~]$ route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+default         _gateway        0.0.0.0         UG    100    0        0 ens18
+10.0.18.0       0.0.0.0         255.255.255.0   U     100    0        0 ens18
+[user@fz1 ~]$
+```
+
+en fz2
+```bash
+[user@fz2 ~]$ ip addr
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether c2:c1:44:70:f8:12 brd ff:ff:ff:ff:ff:ff
+    altname enp0s18
+    inet 10.0.18.118/24 brd 10.0.18.255 scope global dynamic noprefixroute ens18
+       valid_lft 6550sec preferred_lft 6550sec
+    inet6 fe80::c0c1:44ff:fe70:f812/64 scope link noprefixroute 
+       valid_lft forever preferred_lft forever
+[user@fz2 ~]$ route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+default         _gateway        0.0.0.0         UG    100    0        0 ens18
+10.0.18.0       0.0.0.0         255.255.255.0   U     100    0        0 ens18
+[user@fz2 ~]$
+```
+
+3. instalemos screen y actualizamos el sistema
+
+```bash
+[root@fz1 user]# sudo dnf install screen -y
+[root@fz1 user]# screen
+[root@fz1 user]# dnf update -y
+```
+
+## Instalacion del software necesario para el clouster
+Tenemos que agregar las claves RSA para ssh en cada una de las maquinas, ya que pacemaker los necesitara.
+
+1. Configuramos las claves RSA para ssh en cada una de las maquinas.
+
+En fz1
+```bash
+[user@fz1 ~]$ mkdir .ssh
+[user@fz1 ~]$ ssh-keygen
+[user@fz1 ~]$ ssh-copy-id -p 18118 user@asatsl.fi.uncoma.edu.ar
+[user@fz1 ~]$ cat ~/.ssh/<id_fz1>.pub >> ~/.ssh/authorized_keys
+```
+
+En fz2
+```bash
+[user@fz1 ~]$ mkdir .ssh
+[user@fz1 ~]$ ssh-keygen
+[user@fz1 ~]$ ssh-copy-id -p 18117 user@asatsl.fi.uncoma.edu.ar
+[user@fz1 ~]$ cat ~/.ssh/<id_fz2>.pub >> ~/.ssh/authorized_keys
+```
+
+2. Instalamos el software para clouster
+
+```bash
+[user@fz# ~]$ dnf config-manager --set-enabled highavailability
+[user@fz# ~]$ dnf install -y pacemaker pcs psmisc policycoreutils-python3
+Instalado:
+  corosync-3.1.10-1.el9_8.2.x86_64                   corosynclib-3.1.10-1.el9_8.2.x86_64                  gssproxy-0.8.4-7.el9.x86_64                        
+  libev-4.33-6.el9.x86_64                            libknet1-1.28-1.el9.x86_64                           libknet1-compress-bzip2-plugin-1.28-1.el9.x86_64   
+  libknet1-compress-lz4-plugin-1.28-1.el9.x86_64     libknet1-compress-lzma-plugin-1.28-1.el9.x86_64      libknet1-compress-lzo2-plugin-1.28-1.el9.x86_64    
+  libknet1-compress-plugins-all-1.28-1.el9.x86_64    libknet1-compress-zlib-plugin-1.28-1.el9.x86_64      libknet1-compress-zstd-plugin-1.28-1.el9.x86_64    
+  libknet1-crypto-nss-plugin-1.28-1.el9.x86_64       libknet1-crypto-openssl-plugin-1.28-1.el9.x86_64     libknet1-crypto-plugins-all-1.28-1.el9.x86_64      
+  libknet1-plugins-all-1.28-1.el9.x86_64             libnfsidmap-1:2.5.4-42.el9_8.x86_64                  libnozzle1-1.28-1.el9.x86_64                       
+  libqb-2.0.8-1.el9.x86_64                           libverto-libev-0.3.2-3.el9.x86_64                    net-snmp-libs-1:5.9.1-21.el9.x86_64                
+  nfs-utils-1:2.5.4-42.el9_8.x86_64                  nss-tools-3.124.0-5.el9_6.x86_64                     pacemaker-2.1.10-3.el9_8.x86_64                    
+  pacemaker-cli-2.1.10-3.el9_8.x86_64                pacemaker-cluster-libs-2.1.10-3.el9_8.x86_64         pacemaker-libs-2.1.10-3.el9_8.x86_64               
+  pacemaker-schemas-2.1.10-3.el9_8.noarch            pcs-0.11.11-2.el9_8.1.x86_64                         perl-TimeDate-1:2.33-6.el9.noarch                  
+  python3-cffi-1.14.5-5.el9.x86_64                   python3-cryptography-36.0.1-5.el9_6.x86_64           python3-ply-3.11-14.el9.noarch                     
+  python3-pycparser-2.20-6.el9.noarch                python3-pycurl-7.43.0.6-8.el9.x86_64                 python3-pyparsing-2.4.7-9.el9.noarch               
+  python3-tornado-6.5.10-1.el9_8.1.x86_64            resource-agents-4.10.0-111.el9_8.17.alma.1.x86_64    rpcbind-1.2.6-7.el9_8.1.x86_64                     
+  ruby-3.0.7-168.el9_8.x86_64                        ruby-default-gems-3.0.7-168.el9_8.noarch             ruby-libs-3.0.7-168.el9_8.x86_64                   
+  rubygem-bigdecimal-3.0.0-168.el9_8.x86_64          rubygem-bundler-2.2.33-168.el9_8.noarch              rubygem-io-console-0.5.7-168.el9_8.x86_64          
+  rubygem-json-2.5.1-168.el9_8.x86_64                rubygem-psych-3.3.2-168.el9_8.x86_64                 rubygem-rdoc-6.3.4.1-168.el9_8.noarch              
+  rubygem-rexml-3.2.5-168.el9_8.noarch               rubygems-3.2.33-168.el9_8.noarch                     sssd-nfs-idmap-2.9.8-4.el9_8.1.x86_64              
+
+¡Listo!
+[root@fz# user]#
+```
+3. Configuramos el firewall.
+
+```bash
+[root@fz# user]# firewall-cmd --permanent --add-service=high-availability
+success
+[root@fz# user]# firewall-cmd --reload
+success
+[root@fz# user]#
+```
+los puertos requeridos son:
+TCP: 2224, 3121 y 21064
+UDP: 5405
+
+Tambien tenemos que habilitar el demonio de pc.
+
+```bash
+[root@fz1 user]# systemctl status pcsd.service
+○ pcsd.service - PCS GUI and remote configuration interface
+     Loaded: loaded (/usr/lib/systemd/system/pcsd.service; disabled; preset: disabled)
+     Active: inactive (dead)
+       Docs: man:pcsd(8)
+             man:pcs(8)
+[root@fz1 user]# systemctl start pcsd.service
+[root@fz1 user]# systemctl enable pcsd.service
+Created symlink /etc/systemd/system/multi-user.target.wants/pcsd.service → /usr/lib/systemd/system/pcsd.service.
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# systemctl status pcsd.service
+○ pcsd.service - PCS GUI and remote configuration interface
+     Loaded: loaded (/usr/lib/systemd/system/pcsd.service; disabled; preset: disabled)
+     Active: inactive (dead)
+       Docs: man:pcsd(8)
+             man:pcs(8)
+[root@fz2 user]# systemctl start pcsd.service
+[root@fz2 user]# systemctl enable pcsd.service
+Created symlink /etc/systemd/system/multi-user.target.wants/pcsd.service → /usr/lib/systemd/system/pcsd.service.
+[root@fz2 user]#
+```
+
+4. Hay un usuario relacionado con pacemaker y corosync que es llamado hacluster. Cambiemos esta contraseña para poder usarla en el siguiente paso.
+
+```bash
+[root@fz# user]# passwd hacluster
+Cambiando la contraseña del usuario hacluster.
+Nueva contraseña: 
+Vuelva a escribir la nueva contraseña: 
+passwd: todos los tokens de autenticación se actualizaron exitosamente.
+[root@fz# user]#
+```
+
+### Configuracion de corosync
+
+> [!IMPORTANT] 
+> tiene que configugrar nombres para las direcciones ip de los nodos.
+> configure el archivo `/etc/hosts` agregando las direcciones IP y el nombre como se llamara cada nodo.
+
+5. Realizamos la autenticacion de los nodos. En cualquiera de los dos hostings en mi caso fz1. En este paso utilizaremos la contraseña que configuramos en el paso anterior.
+
+```bash
+[root@fz1 user]# pcs host auth fz1 fz2
+Username: hacluster
+Password: 
+fz2: Authorized
+fz1: Authorized
+[root@fz1 user]# 
+```
+6. Podemos verificar el estado del cluster.
+
+```bash
+[root@fz1 user]# pcs status
+Error: error running crm_mon, is pacemaker running?
+  crm_mon: Connection to cluster failed: Connection refused
+[root@fz1 user]# pcs cluster setup cluster_franco fz1 fz2
+No addresses specified for host 'fz1', using 'fz1'
+No addresses specified for host 'fz2', using 'fz2'
+Destroying cluster on hosts: 'fz1', 'fz2'...
+fz1: Successfully destroyed cluster
+fz2: Successfully destroyed cluster
+Requesting remove 'pcsd settings' from 'fz1', 'fz2'
+fz1: successful removal of the file 'pcsd settings'
+fz2: successful removal of the file 'pcsd settings'
+Sending 'corosync authkey', 'pacemaker authkey' to 'fz1', 'fz2'
+fz1: successful distribution of the file 'corosync authkey'
+fz1: successful distribution of the file 'pacemaker authkey'
+fz2: successful distribution of the file 'corosync authkey'
+fz2: successful distribution of the file 'pacemaker authkey'
+Sending 'corosync.conf' to 'fz1', 'fz2'
+fz1: successful distribution of the file 'corosync.conf'
+fz2: successful distribution of the file 'corosync.conf'
+Cluster has been successfully set up.
+[root@fz1 user]#
+```
+
+7. Levantamos el clouster. En uno de los nodos ej: fz1
+
+```bash
+[root@fz1 user]# pcs cluster start --all
+fz2: Starting Cluster...
+fz1: Starting Cluster...
+[root@fz1 user]# pcs cluster status
+Cluster Status:
+ Cluster Summary:
+   * Stack: corosync (Pacemaker is running)
+   * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+   * Last updated: Sat Oct 24 16:29:45 2026 on fz1
+   * Last change:  Sat Oct 24 16:08:19 2026 by hacluster via hacluster on fz1
+   * 2 nodes configured
+   * 0 resource instances configured
+ Node List:
+   * Online: [ fz1 fz2 ]
+
+PCSD Status:
+  fz1: Online
+  fz2: Online
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# pcs cluster status
+Cluster Status:
+ Cluster Summary:
+   * Stack: corosync (Pacemaker is running)
+   * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+   * Last updated: Sat Oct 24 16:09:07 2026 on fz2
+   * Last change:  Sat Oct 24 16:08:19 2026 by hacluster via hacluster on fz1
+   * 2 nodes configured
+   * 0 resource instances configured
+ Node List:
+   * Online: [ fz1 fz2 ]
+
+PCSD Status:
+  fz2: Online
+  fz1: Online
+[root@fz2 user]#
+```
+
+
+### Verificamos la instalacion y funcionamiento de corosync
+
+```bash
+[root@fz1 user]# corosync-cfgtool -s
+Local node ID 1, transport knet
+LINK ID 0 udp
+	addr	= 10.0.18.117
+	status:
+		nodeid:          1:	localhost
+		nodeid:          2:	connected
+[root@fz1 user]# corosync-cmapctl | grep members
+runtime.members.1.config_version (u64) = 0
+runtime.members.1.ip (str) = r(0) ip(10.0.18.117) 
+runtime.members.1.join_count (u32) = 1
+runtime.members.1.status (str) = joined
+runtime.members.2.config_version (u64) = 0
+runtime.members.2.ip (str) = r(0) ip(10.0.18.118) 
+runtime.members.2.join_count (u32) = 1
+runtime.members.2.status (str) = joined
+[root@fz1 user]# pcs status corosync 
+
+Membership information
+----------------------
+    Nodeid      Votes Name
+         1          1 fz1 (local)
+         2          1 fz2
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# corosync-cfgtool -s
+Local node ID 2, transport knet
+LINK ID 0 udp
+	addr	= 10.0.18.118
+	status:
+		nodeid:          1:	connected
+		nodeid:          2:	localhost
+[root@fz2 user]# corosync-cmapctl | grep members
+runtime.members.1.config_version (u64) = 0
+runtime.members.1.ip (str) = r(0) ip(10.0.18.117) 
+runtime.members.1.join_count (u32) = 1
+runtime.members.1.status (str) = joined
+runtime.members.2.config_version (u64) = 0
+runtime.members.2.ip (str) = r(0) ip(10.0.18.118) 
+runtime.members.2.join_count (u32) = 1
+runtime.members.2.status (str) = joined
+[root@fz2 user]# pcs status corosync 
+
+Membership information
+----------------------
+    Nodeid      Votes Name
+         1          1 fz1
+         2          1 fz2 (local)
+[root@fz2 user]# 
+```
+
+### Verificamos el funcionamiento de pacemaker
+
+```bash
+[root@fz1 user]# cat salida.txt
+    PID TTY      STAT   TIME COMMAND
+      2 ?        S      0:00 [kthreadd]
+...
+  15735 ?        SLsl   0:29 /usr/sbin/corosync -f
+  15747 ?        Ss     0:01 /usr/sbin/pacemakerd
+  15748 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-based
+  15749 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-fenced
+  15750 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-execd
+  15751 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-attrd
+  15752 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-schedulerd
+  15753 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-controld
+[root@fz1 user]# pcs status
+Cluster name: cluster_franco
+
+WARNINGS:
+No stonith devices and stonith-enabled is not false
+error: Resource start-up disabled since no STONITH resources have been defined
+error: Either configure some or disable STONITH with the stonith-enabled option
+error: NOTE: Clusters with shared data need STONITH to ensure data integrity
+error: CIB did not pass schema validation
+Errors found during check: config not valid
+
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sat Oct 24 17:52:58 2026 on fz1
+  * Last change:  Sat Oct 24 16:08:19 2026 by hacluster via hacluster on fz1
+  * 2 nodes configured
+  * 0 resource instances configured
+
+Node List:
+  * Online: [ fz1 fz2 ]
+
+Full List of Resources:
+  * No resources
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# ps axf
+    PID TTY      STAT   TIME COMMAND
+      2 ?        S      0:00 [kthreadd]
+   8237 ?        SLsl   0:26 /usr/sbin/corosync -f
+   8249 ?        Ss     0:01 /usr/sbin/pacemakerd
+   8250 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-based
+   8251 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-fenced
+   8252 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-execd
+   8253 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-attrd
+   8254 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-schedulerd
+   8255 ?        Ss     0:00  \_ /usr/libexec/pacemaker/pacemaker-controld
+[root@fz2 user]# pcs status
+Cluster name: cluster_franco
+
+WARNINGS:
+No stonith devices and stonith-enabled is not false
+error: Resource start-up disabled since no STONITH resources have been defined
+error: Either configure some or disable STONITH with the stonith-enabled option
+error: NOTE: Clusters with shared data need STONITH to ensure data integrity
+error: CIB did not pass schema validation
+Errors found during check: config not valid
+
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sat Oct 24 17:52:48 2026 on fz2
+  * Last change:  Sat Oct 24 16:08:19 2026 by hacluster via hacluster on fz1
+  * 2 nodes configured
+  * 0 resource instances configured
+
+Node List:
+  * Online: [ fz1 fz2 ]
+
+Full List of Resources:
+  * No resources
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz2 user]#
+```
+archivo xml base de pcs
+```bash
+[root@fz1 user]# pcs cluster cib
+<cib crm_feature_set="3.19.6" validate-with="pacemaker-3.10" epoch="5" num_updates="10" admin_epoch="0" cib-last-written="Sat Oct 24 16:08:19 2026" update-origin="fz1" update-client="hacluster" update-user="hacluster" have-quorum="1" dc-uuid="1">
+  <configuration>
+    <crm_config>
+      <cluster_property_set id="cib-bootstrap-options">
+        <nvpair id="cib-bootstrap-options-have-watchdog" name="have-watchdog" value="false"/>
+        <nvpair id="cib-bootstrap-options-dc-version" name="dc-version" value="2.1.10-3.el9_8-5693eaeee"/>
+        <nvpair id="cib-bootstrap-options-cluster-infrastructure" name="cluster-infrastructure" value="corosync"/>
+        <nvpair id="cib-bootstrap-options-cluster-name" name="cluster-name" value="cluster_franco"/>
+      </cluster_property_set>
+    </crm_config>
+    <nodes>
+      <node id="1" uname="fz1"/>
+      <node id="2" uname="fz2"/>
+    </nodes>
+    <resources/>
+    <constraints/>
+    <rsc_defaults>
+      <meta_attributes id="build-resource-defaults">
+        <nvpair id="build-resource-stickiness" name="resource-stickiness" value="1"/>
+      </meta_attributes>
+    </rsc_defaults>
+  </configuration>
+  <status>
+    <node_state id="1" uname="fz1" in_ccm="1792868878" crmd="1792868878" crm-debug-origin="do_state_transition" join="member" expected="member">
+      <transient_attributes id="1">
+        <instance_attributes id="status-1">
+          <nvpair id="status-1-.feature-set" name="#feature-set" value="3.19.6"/>
+        </instance_attributes>
+      </transient_attributes>
+      <lrm id="1">
+        <lrm_resources/>
+      </lrm>
+    </node_state>
+    <node_state id="2" uname="fz2" in_ccm="1792868879" crmd="1792868879" crm-debug-origin="do_state_transition" join="member" expected="member">
+      <lrm id="2">
+        <lrm_resources/>
+      </lrm>
+      <transient_attributes id="2">
+        <instance_attributes id="status-2">
+          <nvpair id="status-2-.feature-set" name="#feature-set" value="3.19.6"/>
+        </instance_attributes>
+      </transient_attributes>
+    </node_state>
+  </status>
+</cib>
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# pcs cluster cib
+<cib crm_feature_set="3.19.6" validate-with="pacemaker-3.10" epoch="5" num_updates="10" admin_epoch="0" cib-last-written="Sat Oct 24 16:08:19 2026" update-origin="fz1" update-client="hacluster" update-user="hacluster" have-quorum="1" dc-uuid="1">
+  <configuration>
+    <crm_config>
+      <cluster_property_set id="cib-bootstrap-options">
+        <nvpair id="cib-bootstrap-options-have-watchdog" name="have-watchdog" value="false"/>
+        <nvpair id="cib-bootstrap-options-dc-version" name="dc-version" value="2.1.10-3.el9_8-5693eaeee"/>
+        <nvpair id="cib-bootstrap-options-cluster-infrastructure" name="cluster-infrastructure" value="corosync"/>
+        <nvpair id="cib-bootstrap-options-cluster-name" name="cluster-name" value="cluster_franco"/>
+      </cluster_property_set>
+    </crm_config>
+    <nodes>
+      <node id="1" uname="fz1"/>
+      <node id="2" uname="fz2"/>
+    </nodes>
+    <resources/>
+    <constraints/>
+    <rsc_defaults>
+      <meta_attributes id="build-resource-defaults">
+        <nvpair id="build-resource-stickiness" name="resource-stickiness" value="1"/>
+      </meta_attributes>
+    </rsc_defaults>
+  </configuration>
+  <status>
+    <node_state id="1" uname="fz1" in_ccm="1792868878" crmd="1792868878" crm-debug-origin="do_state_transition" join="member" expected="member">
+      <transient_attributes id="1">
+        <instance_attributes id="status-1">
+          <nvpair id="status-1-.feature-set" name="#feature-set" value="3.19.6"/>
+        </instance_attributes>
+      </transient_attributes>
+      <lrm id="1">
+        <lrm_resources/>
+      </lrm>
+    </node_state>
+    <node_state id="2" uname="fz2" in_ccm="1792868879" crmd="1792868879" crm-debug-origin="do_state_transition" join="member" expected="member">
+      <lrm id="2">
+        <lrm_resources/>
+      </lrm>
+      <transient_attributes id="2">
+        <instance_attributes id="status-2">
+          <nvpair id="status-2-.feature-set" name="#feature-set" value="3.19.6"/>
+        </instance_attributes>
+      </transient_attributes>
+    </node_state>
+  </status>
+</cib>
+[root@fz2 user]# 
+```
+
+usamos el cli propio para verificar errores
+```bash
+[root@fz1 user]# pcs cluster verify --full
+Error: invalid cib:
+error: Resource start-up disabled since no STONITH resources have been defined
+error: Either configure some or disable STONITH with the stonith-enabled option
+error: NOTE: Clusters with shared data need STONITH to ensure data integrity
+error: CIB did not pass schema validation
+Errors found during check: config not valid
+
+Error: Errors have occurred, therefore pcs is unable to continue
+[root@fz1 user]# 
+```
+
+este error es normal en este punto por que todavia no tenemos configurado stonith.
+
+## Facing o STONITH 
+
+Cuando uno de los nodos del cluster se cae, el otor nodo puede seguir funcionando y tomar el control de los recursos, pero si el nodo que se cayo sigue funcionando de alguna manera, puede generar problemas de integridad de datos. Para evitar esto, se utiliza STONITH (Shoot The Other Node In The Head), que básicamente es un mecanismo para asegurarse de que el nodo caído no pueda seguir interfiriendo con el clúster.
+En muchos casos esto se implementa con hardware especializado , pero como este cluster esta montado en maquinas virtuales, por el momento deshabilitaremos este mecanismo.
+
+#### Deshabilitamos el facing.
+
+```bash
+[root@fz1 user]# pcs property set stonith-enabled=false
+[root@fz1 user]# pcs cluster verify --full
+[root@fz1 user]#
+```
+> [!NOTE]
+> Tenemos que deshabilitar el facing en un solo de los nodos por que esto afecta a todo el nodo.
+
+```bash
+[root@fz2 user]# pcs cluster verify --full
+[root@fz2 user]#
+```
+
+## Creamos el clouster pasivo - activo
+
+En nuestro caso vamos a montar un cluster pasivo - activo, esto significa que uno de los nodos estara activo y el otro estara en espera. Cuando el nodo activo falle, el nodo en espera tomara el control de los recursos.
+Para la prueba montaremos una web con apache y DRBD para sincronizar los datos de la web.
+
+### IP Flotante
+
+Necesitamos una IP extra que "flotara" entre los nodos de nuestro clouster. esto permite que en caso de que uno de los nodos que este exponiendo un servicio caiga, no afecte a la direccion que se usa desde fuera (o la que el router use para las redirecciones).
+
+- Direccion IP flotante: 10.0.18.140
+- Direccion IP fz1: 10.0.18.17
+- Direccion IP fz2: 10.0.18.18
+
+```bash
+[root@fz1 user]# pcs resource create ipflotantefz ocf:heartbeat:IPaddr2 ip=10.0.18.142 cidr_netmask=24 op monitor interval=30s
+[root@fz1 user]# ip addr
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: ens18: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether c2:c1:44:70:f8:11 brd ff:ff:ff:ff:ff:ff
+    altname enp0s18
+    inet 10.0.18.117/24 brd 10.0.18.255 scope global dynamic noprefixroute ens18
+       valid_lft 3753sec preferred_lft 3753sec
+    inet 10.0.18.142/24 brd 10.0.18.255 scope global secondary ens18
+       valid_lft forever preferred_lft forever
+    inet6 fe80::c0c1:44ff:fe70:f811/64 scope link noprefixroute 
+       valid_lft forever preferred_lft forever
+[root@fz1 user]# 
+```
+Desde fz2 podemos ver
+
+```bash
+[root@fz2 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sun Oct 25 00:05:44 2026 on fz2
+  * Last change:  Sun Oct 25 00:05:29 2026 by root via root on fz1
+  * 2 nodes configured
+  * 1 resource instance configured
+
+Node List:
+  * Online: [ fz1 fz2 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz1
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz2 user]# 
+```
+
+Desde alguno de los nodos.
+```bash
+[root@fz1 user]#  pcs resource defaults 
+Meta Attrs: build-resource-defaults
+  resource-stickiness=1
+[root@fz1 user]#
+```
+
+Podemos cambiar este valor
+
+```bash
+[root@fz1 user]#  pcs resource defaults update resource-stickiness=100
+Warning: Defaults do not apply to resources which override them with their own defined values
+[root@fz1 user]#  pcs resource defaults 
+Meta Attrs: build-resource-defaults
+  resource-stickiness=100
+[root@fz1 user]#
+```
+
+Esto aplica a todos los recursos, tambian podemos aplicarle a un recurso en particular.
+
+### Servidor HTTP.
+
+Instalamos el servidor web apache en ambos nodos.
+
+```bash
+[root@fz# user]# dnf install -y httpd wget
+Última comprobación de caducidad de metadatos hecha hace 3:15:51, el dom 25 oct 2026 21:04:14.
+El paquete wget-1.21.1-11.el9_8.x86_64 ya está instalado.
+Dependencias resueltas.
+================================================================================
+ Paquete                   Arq.       Versión               Repositorio    Tam.
+================================================================================
+Instalando:
+ httpd                     x86_64     2.4.62-13.el9_8.9     appstream      47 k
+Instalando dependencias:
+ almalinux-logos-httpd     noarch     90.7-1.el9            appstream      18 k
+ apr                       x86_64     1.7.0-12.el9_3        appstream     122 k
+ apr-util                  x86_64     1.6.1-23.el9_8.1      appstream      94 k
+ apr-util-bdb              x86_64     1.6.1-23.el9_8.1      appstream      12 k
+ httpd-core                x86_64     2.4.62-13.el9_8.9     appstream     1.4 M
+ httpd-filesystem          noarch     2.4.62-13.el9_8.9     appstream      14 k
+ httpd-tools               x86_64     2.4.62-13.el9_8.9     appstream      81 k
+Instalando dependencias débiles:
+ apr-util-openssl          x86_64     1.6.1-23.el9_8.1      appstream      14 k
+ mod_http2                 x86_64     2.0.26-6.el9_8.2      appstream     163 k
+ mod_lua                   x86_64     2.4.62-13.el9_8.9     appstream      61 k
+
+Resumen de la transacción
+================================================================================
+Instalar  11 Paquetes
+
+Tamaño total de la descarga: 2.0 M
+Tamaño instalado: 6.1 M
+Descargando paquetes:
+(1/11): almalinux-logos-httpd-90.7-1.el9.noarch  71 kB/s |  18 kB     00:00    
+(2/11): apr-1.7.0-12.el9_3.x86_64.rpm           452 kB/s | 122 kB     00:00    
+(3/11): apr-util-1.6.1-23.el9_8.1.x86_64.rpm    293 kB/s |  94 kB     00:00    
+(4/11): apr-util-bdb-1.6.1-23.el9_8.1.x86_64.rp  57 kB/s |  12 kB     00:00    
+(5/11): apr-util-openssl-1.6.1-23.el9_8.1.x86_6  57 kB/s |  14 kB     00:00    
+(6/11): httpd-2.4.62-13.el9_8.9.x86_64.rpm      202 kB/s |  47 kB     00:00    
+(7/11): httpd-filesystem-2.4.62-13.el9_8.9.noar 114 kB/s |  14 kB     00:00    
+(8/11): httpd-core-2.4.62-13.el9_8.9.x86_64.rpm 5.2 MB/s | 1.4 MB     00:00    
+(9/11): httpd-tools-2.4.62-13.el9_8.9.x86_64.rp 378 kB/s |  81 kB     00:00    
+(10/11): mod_lua-2.4.62-13.el9_8.9.x86_64.rpm   500 kB/s |  61 kB     00:00    
+(11/11): mod_http2-2.0.26-6.el9_8.2.x86_64.rpm  750 kB/s | 163 kB     00:00    
+--------------------------------------------------------------------------------
+Total                                           770 kB/s | 2.0 MB     00:02     
+Ejecutando verificación de operación
+Verificación de operación exitosa.
+Ejecutando prueba de operaciones
+Prueba de operación exitosa.
+Ejecutando operación
+  Preparando          :                                                     1/1 
+  Instalando          : apr-1.7.0-12.el9_3.x86_64                          1/11 
+  Instalando          : apr-util-bdb-1.6.1-23.el9_8.1.x86_64               2/11 
+  Instalando          : apr-util-openssl-1.6.1-23.el9_8.1.x86_64           3/11 
+  Instalando          : apr-util-1.6.1-23.el9_8.1.x86_64                   4/11 
+  Instalando          : httpd-tools-2.4.62-13.el9_8.9.x86_64               5/11 
+  Ejecutando scriptlet: httpd-filesystem-2.4.62-13.el9_8.9.noarch          6/11 
+  Instalando          : httpd-filesystem-2.4.62-13.el9_8.9.noarch          6/11 
+  Instalando          : httpd-core-2.4.62-13.el9_8.9.x86_64                7/11 
+  Instalando          : mod_lua-2.4.62-13.el9_8.9.x86_64                   8/11 
+  Instalando          : almalinux-logos-httpd-90.7-1.el9.noarch            9/11 
+  Instalando          : mod_http2-2.0.26-6.el9_8.2.x86_64                 10/11 
+  Instalando          : httpd-2.4.62-13.el9_8.9.x86_64                    11/11 
+  Ejecutando scriptlet: httpd-2.4.62-13.el9_8.9.x86_64                    11/11 
+  Verificando         : almalinux-logos-httpd-90.7-1.el9.noarch            1/11 
+  Verificando         : apr-1.7.0-12.el9_3.x86_64                          2/11 
+  Verificando         : apr-util-1.6.1-23.el9_8.1.x86_64                   3/11 
+  Verificando         : apr-util-bdb-1.6.1-23.el9_8.1.x86_64               4/11 
+  Verificando         : apr-util-openssl-1.6.1-23.el9_8.1.x86_64           5/11 
+  Verificando         : httpd-2.4.62-13.el9_8.9.x86_64                     6/11 
+  Verificando         : httpd-core-2.4.62-13.el9_8.9.x86_64                7/11 
+  Verificando         : httpd-filesystem-2.4.62-13.el9_8.9.noarch          8/11 
+  Verificando         : httpd-tools-2.4.62-13.el9_8.9.x86_64               9/11 
+  Verificando         : mod_http2-2.0.26-6.el9_8.2.x86_64                 10/11 
+  Verificando         : mod_lua-2.4.62-13.el9_8.9.x86_64                  11/11 
+
+Instalado:
+  almalinux-logos-httpd-90.7-1.el9.noarch                                       
+  apr-1.7.0-12.el9_3.x86_64                                                     
+  apr-util-1.6.1-23.el9_8.1.x86_64                                              
+  apr-util-bdb-1.6.1-23.el9_8.1.x86_64                                          
+  apr-util-openssl-1.6.1-23.el9_8.1.x86_64                                      
+  httpd-2.4.62-13.el9_8.9.x86_64                                                
+  httpd-core-2.4.62-13.el9_8.9.x86_64                                           
+  httpd-filesystem-2.4.62-13.el9_8.9.noarch                                     
+  httpd-tools-2.4.62-13.el9_8.9.x86_64                                          
+  mod_http2-2.0.26-6.el9_8.2.x86_64                                             
+  mod_lua-2.4.62-13.el9_8.9.x86_64                                              
+
+¡Listo!
+
+[root@fz# user]# firewall-cmd --permanent --add-service=http
+success
+[root@fz# user]# firewall-cmd --reload
+success
+[root@fz# user]#
+```
+
+> [!IMPORTANT] 
+> La idea es que no habilitemos el httpd para poder levantarlo al inicio, por que el clouster tiene que manejarlo.
+
+Creamos una web sencilla.
+```bash
+[root@fz# user]# cat <<-END >/var/www/html/index.html
+ <html>
+ <body>My Test Site - $(hostname)</body>
+ </html>
+END
+[root@fz# user]#
+```
+Habilitamos la url de estatus de apache.
+
+```bash
+[root@fz# user]# cat <<-END >/etc/httpd/conf.d/status.conf
+ <Location /server-status>
+    SetHandler server-status
+    Require local
+ </Location>
+END
+[root@fz# user]#
+```
+Creamos el recurso para el servidor HTTP
+
+```bash
+[root@fz1 user]# pcs resource create PaginaFZ ocf:heartbeat:apache configfile=/etc/httpd/conf/httpd.conf statusurl="http://localhost/server-status" op monitor interval=1min
+[root@fz1 user]#
+```
+Verificamos que el servicio este levantado en el segundo nodo.
+
+```bash
+[root@fz2 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Mon Oct 26 20:16:24 2026 on fz2
+  * Last change:  Mon Oct 26 20:15:46 2026 by root via root on fz1
+  * 2 nodes configured
+  * 2 resource instances configured
+
+Node List:
+  * Online: [ fz1 fz2 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz1
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz2
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz2 user]#
+```
+
+El problema ahora es la ip flotante, ya que esta esta configurada en el primer nodo. por lo que desde esa ip no llegamos al recurso http.
+Vamos a cambiar el tiempo en el cual se revisa el tiempo 
+
+```bash
+[root@fz1 user]# pcs resource op defaults
+[root@fz1 user]# pcs resource op defaults update timeout=240s
+Warning: Defaults do not apply to resources which override them with their own defined values
+[root@fz1 user]# pcs resource op defaults
+Meta Attrs: op_defaults-meta_attributes
+  timeout=240s
+[root@fz1 user]#
+```
+
+Ahora tenemos que indicarle al clouster que dos recursos tienen que funcionar juntos.
+Para esto vamos a crear una restriccion de colocation. esto significa que si uno de los recursos se cae, el otro recurso tambien se tiene que caer. y si uno de los recursos se levanta en un nodo, el otro recurso tambien se tiene que levantar en ese nodo.
+
+```bash
+[root@fz1 user]# pcs constraint colocation add PaginaFZ with ipflotantefz INFINITY
+[root@fz1 user]# pcs constraint 
+Colocation Constraints:
+  resource 'PaginaFZ' with resource 'ipflotantefz'
+    score=INFINITY
+[root@fz1 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz1 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Mon Oct 26 21:11:42 2026 on fz1
+  * Last change:  Mon Oct 26 21:11:29 2026 by root via root on fz1
+  * 2 nodes configured
+  * 2 resource instances configured
+
+Node List:
+  * Online: [ fz1 fz2 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz1
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz1
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz1 user]# 
+```
+
+> [!NOTE]
+> La palabra clave es INFINITY, que le indica a el cluster que el recurso PaginaFZ tiene que estar en el mismo nodo que ipflotantefz.
+
+El orden importa por que el clouster verificara que se puede levantar un recurso y despues lo trabajara con el otro.
+Desde la otra maquina podemos ver si el sitio esta disponible
+
+```bash
+[root@fz2 user]# wget 10.0.18.142
+--2026-10-26 21:17:44--  http://10.0.18.142/
+Conectando con 10.0.18.142:80... conectado.
+Petición HTTP enviada, esperando respuesta... 200 OK
+Longitud: 50 [text/html]
+Grabando a: «index.html»
+
+index.html                              100%[=============================================================================>]      50  --.-KB/s    en 0s      
+
+2026-10-26 21:17:45 (10,4 MB/s) - «index.html» guardado [50/50]
+[root@fz2 user]# cat index.html 
+ <html>
+ <body>My Test Site - fz1</body>
+ </html>
+[root@fz2 user]# 
+```
+
+Probamos detener fz1 para ver como los recursos se migran a la segunda maquina
+
+```bash
+[root@fz1 user]# pcs cluster stop
+Stopping Cluster (pacemaker)...
+Stopping Cluster (corosync)...
+[root@fz1 user]#
+```
+en la segunda maquina verificamos el estado del clouster
+```bash
+[root@fz2 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz2 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Mon Oct 26 21:53:05 2026 on fz2
+  * Last change:  Mon Oct 26 21:11:29 2026 by root via root on fz1
+  * 2 nodes configured
+  * 2 resource instances configured
+
+Node List:
+  * Online: [ fz2 ]
+  * OFFLINE: [ fz1 ]
+
+Full List of Resources:
+  * ipflotantefz        (ocf:heartbeat:IPaddr2):         Started fz2
+  * PaginaFZ    (ocf:heartbeat:apache):  Started fz2
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz2 user]# 
+```
+
+Tambien tenemos otras restricciones
+- preferencia: cuando decidimos que un nodo es mas preferido para ciertos servicios. por ejemplo por mejores recursos.
+
+tambien podemos moverlo manualmente, tambien llamado switch lover.
+
+```bash
+[root@fz1 user]# pcs resource move PaginaFZ fz1
+Location constraint to move resource 'PaginaFZ' has been created
+Waiting for the cluster to apply configuration changes...
+Location constraint created to move resource 'PaginaFZ' has been removed
+Waiting for the cluster to apply configuration changes...
+resource 'PaginaFZ' is running on node 'fz1'
+[root@fz1 user]# 
+```
+
+lo que hace es agregar una preferencia INFINITY a el nodo objetivo y luego elimina la regla.
+
+### Paso 8 - Replicación de bloques usando DRBD
+
+La idea es replicar la inforamcion de la pagina web entre los dos nodos. para esto vamos a usar DRBD. que es un sistema de replicacion de bloques.
+
+Instalamos RDBD en ambos nodos
+
+```bash
+[root@fz# user]# rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+[root@fz# user]# dnf install -y https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm
+Última comprobación de caducidad de metadatos hecha hace 1:40:29, el mar 27 oct 2026 15:02:49.
+elrepo-release-9.el9.elrepo.noarch.rpm                                                                                                                                                                         20 kB/s |  18 kB     00:00    
+Dependencias resueltas.
+==============================================================================================================================================================================================================================================
+ Paquete                                                    Arquitectura                                       Versión                                                         Repositorio                                               Tam.
+==============================================================================================================================================================================================================================================
+Instalando:
+ elrepo-release                                             noarch                                             9.5-2.el9.elrepo                                                @commandline                                              18 k
+
+Resumen de la transacción
+==============================================================================================================================================================================================================================================
+Instalar  1 Paquete
+
+Tamaño total: 18 k
+Tamaño instalado: 8.3 k
+Descargando paquetes:
+Ejecutando verificación de operación
+Verificación de operación exitosa.
+Ejecutando prueba de operaciones
+Prueba de operación exitosa.
+Ejecutando operación
+  Preparando          :                                                                                                                                                                                                                   1/1 
+  Instalando          : elrepo-release-9.5-2.el9.elrepo.noarch                                                                                                                                                                            1/1 
+  Verificando         : elrepo-release-9.5-2.el9.elrepo.noarch                                                                                                                                                                            1/1 
+
+Instalado:
+  elrepo-release-9.5-2.el9.elrepo.noarch                                                                                                                                                                                                      
+
+¡Listo!
+[root@fz# user]# 
+```
+
+instalamos el modulo del kernel 
+
+```bash
+[root@fz# user]# dnf install -y kmod-drbd9x drbd9x-utils
+
+ELRepo.org Community Enterprise Linux Repository - el9                                                                                                                                                         96 kB/s | 231 kB     00:02    
+Dependencias resueltas.
+==============================================================================================================================================================================================================================================
+ Paquete                                                   Arquitectura                                        Versión                                                              Repositorio                                          Tam.
+==============================================================================================================================================================================================================================================
+Instalando:
+ drbd9x-utils                                              x86_64                                              9.35.0-1.el9.elrepo                                                  elrepo                                              1.0 M
+ kmod-drbd9x                                               x86_64                                              9.3.4-1.el9_8.elrepo                                                 elrepo                                              501 k
+
+Resumen de la transacción
+==============================================================================================================================================================================================================================================
+Instalar  2 Paquetes
+
+Tamaño total de la descarga: 1.5 M
+Tamaño instalado: 5.9 M
+Descargando paquetes:
+(1/2): kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64.rpm                                                                                                                                                            295 kB/s | 501 kB     00:01    
+(2/2): drbd9x-utils-9.35.0-1.el9.elrepo.x86_64.rpm                                                                                                                                                            537 kB/s | 1.0 MB     00:01    
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                                                                                         651 kB/s | 1.5 MB     00:02     
+ELRepo.org Community Enterprise Linux Repository - el9                                                                                                                                                        1.6 MB/s | 1.7 kB     00:00    
+La llave GPG de file:///etc/pki/rpm-gpg/RPM-GPG-KEY-elrepo.org (0xBAADAE52) ya se encuentra instalada
+ELRepo.org Community Enterprise Linux Repository - el9                                                                                                                                                        2.8 MB/s | 3.1 kB     00:00    
+Importando llave GPG 0xEAA31D4A:
+ ID usuario: "elrepo.org (RPM Signing Key v2 for elrepo.org) <secure@elrepo.org>"
+ Huella    : B8A7 5587 4DA2 40C9 DAC4 E715 5160 0989 EAA3 1D4A
+ Desde     : /etc/pki/rpm-gpg/RPM-GPG-KEY-v2-elrepo.org
+La llave ha sido importada exitosamente
+Ejecutando verificación de operación
+Verificación de operación exitosa.
+Ejecutando prueba de operaciones
+Prueba de operación exitosa.
+Ejecutando operación
+  Preparando          :                                                                                                                                                                                                                   1/1 
+  Instalando          : kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64                                                                                                                                                                           1/2 
+  Ejecutando scriptlet: kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64                                                                                                                                                                           1/2 
+  Instalando          : drbd9x-utils-9.35.0-1.el9.elrepo.x86_64                                                                                                                                                                           2/2 
+  Ejecutando scriptlet: drbd9x-utils-9.35.0-1.el9.elrepo.x86_64                                                                                                                                                                           2/2 
+  Ejecutando scriptlet: kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64                                                                                                                                                                           2/2 
+  Ejecutando scriptlet: drbd9x-utils-9.35.0-1.el9.elrepo.x86_64                                                                                                                                                                           2/2 
+  Verificando         : drbd9x-utils-9.35.0-1.el9.elrepo.x86_64                                                                                                                                                                           1/2 
+  Verificando         : kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64                                                                                                                                                                           2/2 
+
+Instalado:
+  drbd9x-utils-9.35.0-1.el9.elrepo.x86_64                                                                               kmod-drbd9x-9.3.4-1.el9_8.elrepo.x86_64                                                                              
+
+¡Listo!
+[root@fz# user]# 
+```
+tenemos que habilitar las politicas de SELinux para que permita el uso de DRBD.
+```bash
+[root@fz# user]# semanage permissive -a drbd_t
+```
+
+habilitamos el puerto en el firewall. En este caso usamos las direcciones IP de las maquinas de cluster.
+
+```bash
+[root@fz1 user]# firewall-cmd --permanent --add-rich-rule='rule family="ipv4" \
+> source address="10.0.18.118" port port="7789" protocol="tcp" accept'
+success
+[root@fz1 user]# firewall-cmd --reload
+success
+[root@fz1 user]#
+```
+
+En la segunda maquina
+```bash
+[root@fz2 user]# firewall-cmd --permanent --add-rich-rule='rule family="ipv4" \
+> source address="10.0.18.117" port port="7789" protocol="tcp" accept'
+success
+[root@fz2 user]# firewall-cmd --reload
+success
+[root@fz2 user]#
+```
+
+creamos la unidad a compartir. En este caso vamos a usar un LVM.
+
+```bash
+[root@fz# user]# lsblk 
+NAME               MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+sr0                 11:0    1 1024M  0 rom  
+vda                252:0    0   32G  0 disk 
+├─vda1             252:1    0    1G  0 part /boot
+└─vda2             252:2    0   31G  0 part 
+  ├─almalinux-root 253:0    0 28,9G  0 lvm  /
+  └─almalinux-swap 253:1    0  2,1G  0 lvm  [SWAP]
+vdb                252:16   0    1G  0 disk 
+[root@fz# user]# pvcreate /dev/vdb
+  Physical volume "/dev/vdb" successfully created.
+[root@fz# user]# vgcreate dbrd /dev/vdb
+  Volume group "drdb" successfully created
+[root@fz# user]# lvcreate -n drdb_fz -l 100%VG dbrd
+  Logical volume "drdb_fz" created.
+[root@fz# user]# lvs
+  LV      VG        Attr       LSize    Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  root    almalinux -wi-ao----   28,86g                                                    
+  swap    almalinux -wi-ao----    2,13g                                                    
+  drdb_fz dbrd      -wi-a----- 1020,00m                                                    
+[root@fz# user]#
+```
+
+Creamos el archivo de configuracion de DRBD, para nuestra web.
+
+
+```bash
+[root@fz# user]# cat <<END >/etc/drbd.d/wwwdata.res
+resource "wwwdata" {
+  device minor 1;
+  meta-disk internal;
+
+  net {
+    protocol C;
+    fencing dont-care;
+    verify-alg sha1;
+  }
+  handlers {
+    fence-peer "/usr/lib/drbd/crm-fence-peer.9.sh";
+    unfence-peer "/usr/lib/drbd/crm-unfence-peer.9.sh";
+  }
+  on "fz1" {
+    disk "/dev/drdb/drdb_fz";
+    node-id 0;
+  }
+  on "fz2" {
+    disk "/dev/drdb/drdb_fz";
+    node-id 1;
+  }
+  connection {
+    host "fz1" address 10.0.18.117:7789;
+    host "fz2" address 10.0.18.118:7789;
+  }
+}
+END
+```
+
+> [!IMPORTANT]
+> La linea de facing dont-care es muy importante por que sino cuando probemos un failover el clouster no podra promocionar al otro nodo. al indicarle esto el nodo no esperar a que el mecanismo de facing apague el nodo caido, sino que promociona directamente el siguiente nodo.
+
+Iniciamos el recurso DRBD.
+
+```bash
+[root@fz# user]# drbdadm create-md wwwdata
+initializing activity log
+initializing bitmap (1024 KB) to all zero
+Writing meta data...
+New drbd meta data block successfully created.
+success
+[root@fz# user]# modprobe drbd
+[root@fz# user]# drbdadm up wwwdat
+```
+
+```bash
+[root@fz1 user]# drbdadm status
+wwwdata role:Secondary
+  disk:Inconsistent open:no
+  fz2 role:Secondary
+    peer-disk:Inconsistent
+
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# drbdadm status
+wwwdata role:Secondary
+  disk:Inconsistent open:no
+  fz1 role:Secondary
+    peer-disk:Inconsistent
+
+[root@fz2 user]#
+```
+
+Tenemos que seleccionar uno de los nodos como el activo
+
+```bash
+[root@fz1 user]# drbdadm primary --force wwwdata
+[root@fz1 user]# drbdadm status
+wwwdata role:Primary
+  disk:UpToDate open:no
+  fz2 role:Secondary
+    peer-disk:UpToDate
+
+[root@fz1 user]#
+```
+
+```bash
+[root@fz2 user]# drbdadm status
+wwwdata role:Secondary
+  disk:UpToDate open:no
+  fz1 role:Primary
+    peer-disk:UpToDate
+
+[root@fz2 user]#
+```
+
+Ahora le vamos a crear un filesystem a dicho disco
+
+```bash
+[root@fz1 user]# mkfs.ext4 /dev/drbd1
+mke2fs 1.46.5 (30-Dec-2021)
+Descartando los bloques del dispositivo: hecho                           
+Se está creando un sistema de ficheros con 261103 bloques de 4k y 65280 nodos-i
+UUID del sistema de ficheros: 21650a15-8fe5-4200-abe1-2d0132b8abef
+Respaldos del superbloque guardados en los bloques: 
+	32768, 98304, 163840, 229376
+
+Reservando las tablas de grupo: hecho                           
+Escribiendo las tablas de nodos-i: hecho                           
+Creando el fichero de transacciones (4096 bloques): hecho
+Escribiendo superbloques y la información contable del sistema de ficheros: hecho
+
+[root@fz1 user]#mount /dev/drbd1 /media
+[root@fz1 user]# df -h
+S.ficheros                 Tamaño Usados  Disp Uso% Montado en
+devtmpfs                     361M      0  361M   0% /dev
+tmpfs                        383M    33M  351M   9% /dev/shm
+tmpfs                        153M    15M  139M  10% /run
+/dev/mapper/almalinux-root    29G   2,9G   26G  10% /
+/dev/vda1                   1014M   366M  649M  37% /boot
+tmpfs                         77M      0   77M   0% /run/user/1000
+/dev/drbd1                   986M    24K  919M   1% /media
+[root@fz1 user]# 
+```
+
+ahora podemos crear un archivo en media para ver como se replica
+```bash
+[root@fz1 user]# cat <<-END >/media/index.html
+ <html>
+  <body>My Test Site - DRBD</body>
+ </html>
+END
+[root@fz1 user]# chcon -R --reference=/var/www/html /media
+[root@fz1 user]# umount /dev/drbd1
+```
+
+> [!IMPORTANT] 
+> no hay que utilizar /dev/drdb/drdb_fz por que tenemos que trabajar con drbd que escribira la matadata propia. 
+> no utilices directamente el dispositivo lvm, por que sobreescibira los metadatos de DRBD.
+
+Agregamos a drbd a el clouster.
+
+primero tenemos que agregar una restriccion de orden de inicio.
+la ip flotante se tiene que iniciar antes del apache.
+
+```bash
+[root@fz1 user]# pcs constraint order ipflotantefz then PaginaFZ
+Adding ipflotantefz PaginaFZ (kind: Mandatory) (Options: first-action=start then-action=start)
+[root@fz1 user]# pcs constraint 
+Location Constraints:
+  resource 'PaginaFZ' prefers node 'fz1' with score 50
+Colocation Constraints:
+  resource 'PaginaFZ' with resource 'ipflotantefz'
+    score=INFINITY
+Order Constraints:
+  start resource 'ipflotantefz' then start resource 'PaginaFZ'
+[root@fz1 user]#
+```
+
+Agregamos el drbd al clouster
+
+```bash 
+[root@fz1 user]# pcs cluster cib drbd_cfg
+[root@fz1 user]# pcs -f drbd_cfg resource create WebPagina ocf:linbit:drbd \
+     drbd_resource=wwwdata op monitor interval=29s role=Promoted \
+     monitor interval=31s role=Unpromoted
+[root@fz1 user]# pcs -f drbd_cfg resource
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz1
+  *   	(ocf:heartbeat:apache):	 Started fz1
+  * WebPagina	(ocf:linbit:drbd):	 Stopped
+[root@fz1 user]# pcs -f drbd_cfg resource promotable WebPagina \
+     promoted-max=1 promoted-node-max=1 clone-max=2 clone-node-max=1 \
+     notify=true
+Deprecation Warning: configuring meta attributes without specifying the 'meta' keyword is deprecated and will be removed in a future release
+[root@fz1 user]# pcs cluster cib-push drbd_cfg --config
+CIB updated
+[root@fz2 user]# pcs resource status
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz2
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz2
+  * Clone Set: WebPagina-clone [WebPagina] (promotable):
+    * Promoted: [ fz2 ]
+    * Unpromoted: [ fz1 ]
+  * WebFS	(ocf:heartbeat:Filesystem):	 Started fz2
+[root@fz2 user]#
+```
+
+Configuramos el filesystem para que se monte en /var/www/html
+
+```bash
+[root@fz1 user]# pcs cluster cib fs_cfg
+[root@fz1 user]# pcs -f fs_cfg resource create WebFS Filesystem \
+    device="/dev/drbd1" directory="/var/www/html" fstype="xfs"
+Assumed agent name 'ocf:heartbeat:Filesystem' (deduced from 'Filesystem')
+[root@fz1 user]# pcs -f fs_cfg constraint colocation add \
+    WebFS with Promoted WebPagina-clone
+[root@fz1 user]# pcs -f fs_cfg constraint order \
+    promote WebPagina-clone then start WebFS
+Adding WebPagina-clone WebFS (kind: Mandatory) (Options: first-action=promote then-action=start)
+[root@fz1 user]# pcs -f fs_cfg constraint colocation add PaginaFZ with WebFS
+[root@fz1 user]# pcs -f fs_cfg constraint order WebFS then PaginaFZ
+Adding WebFS PaginaFZ (kind: Mandatory) (Options: first-action=start then-action=start)
+[root@fz1 user]# pcs cluster cib-push fs_cfg --config
+CIB updated
+[root@fz2 user]# pcs resource status
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz2
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz2
+  * Clone Set: WebPagina-clone [WebPagina] (promotable):
+    * Promoted: [ fz2 ]
+    * Unpromoted: [ fz1 ]
+  * WebFS	(ocf:heartbeat:Filesystem):	 Started fz2
+```
+
+ahora podemos probar un failover, para esto detenemos el nodo fz2 y verificamos que el recurso se levanta en el nodo fz1.
+
+```bash
+[root@fz1 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz2 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sun Nov  1 17:55:34 2026 on fz1
+  * Last change:  Sun Nov  1 17:30:22 2026 by root via root on fz2
+  * 2 nodes configured
+  * 5 resource instances configured
+
+Node List:
+  * Node fz1: standby
+  * Online: [ fz2 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz2
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz2
+  * Clone Set: WebPagina-clone [WebPagina] (promotable):
+    * Promoted: [ fz2 ]
+    * Stopped: [ fz1 ]
+  * WebFS	(ocf:heartbeat:Filesystem):	 Started fz2
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz1 user]# pcs node standby fz2
+[root@fz1 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz2 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sun Nov  1 17:57:21 2026 on fz1
+  * Last change:  Sun Nov  1 17:57:10 2026 by root via root on fz2
+  * 2 nodes configured
+  * 5 resource instances configured
+
+Node List:
+  * Node fz2: standby
+  * Online: [ fz1 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz1
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz1
+  * Clone Set: WebPagina-clone [WebPagina] (promotable):
+    * Promoted: [ fz1 ]
+    * Stopped: [ fz2 ]
+  * WebFS	(ocf:heartbeat:Filesystem):	 Started fz1
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz1 user]# pcs node unstandby fz2
+[root@fz1 user]# pcs node standby fz1
+[root@fz1 user]# pcs status
+Cluster name: cluster_franco
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: fz2 (version 2.1.10-3.el9_8-5693eaeee) - partition with quorum
+  * Last updated: Sun Nov  1 17:58:55 2026 on fz1
+  * Last change:  Sun Nov  1 17:58:04 2026 by root via root on fz1
+  * 2 nodes configured
+  * 5 resource instances configured
+
+Node List:
+  * Node fz1: standby
+  * Online: [ fz2 ]
+
+Full List of Resources:
+  * ipflotantefz	(ocf:heartbeat:IPaddr2):	 Started fz2
+  * PaginaFZ	(ocf:heartbeat:apache):	 Started fz2
+  * Clone Set: WebPagina-clone [WebPagina] (promotable):
+    * Promoted: [ fz2 ]
+    * Stopped: [ fz1 ]
+  * WebFS	(ocf:heartbeat:Filesystem):	 Started fz2
+
+Daemon Status:
+  corosync: active/disabled
+  pacemaker: active/disabled
+  pcsd: active/enabled
+[root@fz1 user]#
+```

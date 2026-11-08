@@ -95,3 +95,51 @@ h2 {
 #map {
   height: 480px;
 }
+
+/* Estilo base para todas las alertas */
+.markdown-alert {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  border-left: 0.25em solid;
+  border-radius: 0.375rem;
+  background-color: #f6f8fa;
+}
+
+.markdown-alert .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Variante: IMPORTANT */
+.markdown-alert.markdown-alert-important {
+  border-left-color: #d60e0ec7;
+  background-color: #ddf4ff25;
+}
+
+.markdown-alert.markdown-alert-important .markdown-alert-title {
+  color: #dfdfdf;
+}
+
+/* Opcional: Otras variantes de GFM */
+.markdown-alert.markdown-alert-note {
+  border-left-color: #0969da;
+  background-color: #ddf4ff25;
+}
+
+.markdown-alert.markdown-alert-warning {
+  border-left-color: #9a6700;
+  background-color: #ddf4ff25;
+}
+
+.markdown-alert.markdown-alert-tip {
+  border-left-color: #1a7f37;
+  background-color: #ddf4ff25;
+}
+
+.markdown-alert.markdown-alert-caution {
+  border-left-color: #cf222d8a;
+  background-color: #ddf4ff25;
+}
