@@ -16,7 +16,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9 # O la versión específica de pnpm que utilices
+          version: 9.15.0 # O la versión específica de pnpm que utilices
 
       # 3. Configurar Node.js con caché de pnpm integrada
       - name: Setup Node.js
