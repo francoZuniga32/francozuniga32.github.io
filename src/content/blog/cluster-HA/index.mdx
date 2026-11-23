@@ -4,14 +4,11 @@ description: 'Configuracion de cluster de Alta Disponibilidad (High Availability
 publicationDate: 2026-11-01T00:00:00Z
 ---
 
-> [!IMPORTANT]
-> Este documento esta en proceso
-
 Si bien existen muchas formas de configurar un cluster de alta disponibilidad, en este artículo vamos a ver una forma de hacerlo usando **AlmaLinux**, **Pacemaker** y **Corosync**.
 
 ## Algunos conceptos de Clustering
 
-Un clustering es un conjunto de computadoras que en el caso de un cluster de HA (High Availability) tienen el objetivo de que si una de las maquinas falla, otra del cluster pueda remplazarla y continuar con el servicio ofrecido.
+Un clustering es un conjunto de computadoras que trabajan en conjunto para resolver un problema. En el caso de un cluster de Alta Disponibilidad (High Availability) tienen el objetivo de que si una de las maquinas falla, otra del cluster pueda remplazarla y continuar ofreciendo los serivcios de la maquina caida.
 En el caso de clustering de altas prestaciones (HPC) el objetivo es que varias maquinas puedan compartir el poder de computo entre si para poder resolver algun problema puntal, en este caso problemas que requieren mucho poder de computo.
 
 Algunas ideas puntuales:
@@ -35,8 +32,6 @@ Algunas ideas puntuales:
 
 El objetivo de este laboratorio es configuara un cluster de HA usando dos maquinas virtuales. La idea es alojar un servidor web usando apache y replicando la informacion de la misma mediante DRBD.
 
-
-
 ## Instalacion de almalinux
 
 Para esta prueba tenemos que tener dos maquinas virtuales corriendo almalinux en su ultima version (creo que van por la version 9.2).
@@ -48,16 +43,14 @@ Una ves instaldo podremos proceder con los siguientes pasos.
 > user@fz1 o user@fz2 dependiendo de la maquina en la que se este ejecutando el comando y user@fz# en caso de que se ejecuten en ambas
 
 
-1. configuramos el hostname de cada una de las maquinas
+Configuramos el hostname de cada una de las maquinas
 
 ```bash
 [user@fz1 ~]$ sudo hostnamectl set-hostname fz1
 ```
 
 Es importante saber la configuracion de la red de cada una de las maquinas, como su direccion IP y mascara. es importante que estas direcciones no cambien.
-
-
-2. la configuracion de red es:
+La configuracion de red es:
 
 para fz1:
 ```bash
@@ -220,7 +213,7 @@ passwd: todos los tokens de autenticación se actualizaron exitosamente.
 ### Configuracion de corosync
 
 > [!IMPORTANT] 
-> tiene que configugrar nombres para las direcciones ip de los nodos.
+> tiene que configurar los nombres para las direcciones ip de los nodos.
 > configure el archivo `/etc/hosts` agregando las direcciones IP y el nombre como se llamara cada nodo.
 
 5. Realizamos la autenticacion de los nodos. En cualquiera de los dos hostings en mi caso fz1. En este paso utilizaremos la contraseña que configuramos en el paso anterior.
@@ -302,7 +295,6 @@ PCSD Status:
   fz1: Online
 [root@fz2 user]#
 ```
-
 
 ### Verificamos la instalacion y funcionamiento de corosync
 
@@ -550,8 +542,8 @@ archivo xml base de pcs
 </cib>
 [root@fz2 user]# 
 ```
+Usamos el cli propio para verificar errores
 
-usamos el cli propio para verificar errores
 ```bash
 [root@fz1 user]# pcs cluster verify --full
 Error: invalid cib:
@@ -587,7 +579,7 @@ En muchos casos esto se implementa con hardware especializado , pero como este c
 [root@fz2 user]#
 ```
 
-## Creamos el clouster pasivo - activo
+## Clouster pasivo - activo
 
 En nuestro caso vamos a montar un cluster pasivo - activo, esto significa que uno de los nodos estara activo y el otro estara en espera. Cuando el nodo activo falle, el nodo en espera tomara el control de los recursos.
 Para la prueba montaremos una web con apache y DRBD para sincronizar los datos de la web.
@@ -945,7 +937,7 @@ resource 'PaginaFZ' is running on node 'fz1'
 
 lo que hace es agregar una preferencia INFINITY a el nodo objetivo y luego elimina la regla.
 
-### Paso 8 - Replicación de bloques usando DRBD
+### Replicación de bloques usando DRBD
 
 La idea es replicar la inforamcion de la pagina web entre los dos nodos. para esto vamos a usar DRBD. que es un sistema de replicacion de bloques.
 
@@ -1094,7 +1086,6 @@ vdb                252:16   0    1G  0 disk
 
 Creamos el archivo de configuracion de DRBD, para nuestra web.
 
-
 ```bash
 [root@fz# user]# cat <<END >/etc/drbd.d/wwwdata.res
 resource "wwwdata" {
@@ -1214,7 +1205,8 @@ tmpfs                         77M      0   77M   0% /run/user/1000
 [root@fz1 user]# 
 ```
 
-ahora podemos crear un archivo en media para ver como se replica
+Ahora podemos crear un archivo en media para ver como se replica
+
 ```bash
 [root@fz1 user]# cat <<-END >/media/index.html
  <html>
@@ -1229,10 +1221,10 @@ END
 > no hay que utilizar /dev/drdb/drdb_fz por que tenemos que trabajar con drbd que escribira la matadata propia. 
 > no utilices directamente el dispositivo lvm, por que sobreescibira los metadatos de DRBD.
 
-Agregamos a drbd a el clouster.
+#### Agregamos a drbd a el clouster.
 
-primero tenemos que agregar una restriccion de orden de inicio.
-la ip flotante se tiene que iniciar antes del apache.
+Primero tenemos que agregar una restriccion de orden de inicio.
+La ip flotante se tiene que iniciar antes del apache.
 
 ```bash
 [root@fz1 user]# pcs constraint order ipflotantefz then PaginaFZ
@@ -1301,7 +1293,7 @@ CIB updated
   * WebFS	(ocf:heartbeat:Filesystem):	 Started fz2
 ```
 
-ahora podemos probar un failover, para esto detenemos el nodo fz2 y verificamos que el recurso se levanta en el nodo fz1.
+Ahora podemos probar un failover, para esto detenemos el nodo fz2 y verificamos que el recurso se levanta en el nodo fz1.
 
 ```bash
 [root@fz1 user]# pcs status
@@ -1387,3 +1379,14 @@ Daemon Status:
   pcsd: active/enabled
 [root@fz1 user]#
 ```
+
+## Concluciones
+
+Implementar un cluster de este tipo sirve para poder reducir la posibilidad de que una serie de servicios queden fuera de servicio.
+No es infalible para que una serie de servicios quede fuera de servicio, por ejemplo puede tener alguna falla en la red o alguna vulnerabilidad que tiene que ser tratada dando de baja algun servicio.
+
+Este es un ejemplo practico que implemente para una materia de la univesidad. Puede comprobarlo siguiente este tutorial que se basa enteramente en el instructivo de pacemaker.
+
+## Referencias
+
+- [Clusters from Scratch](https://clusterlabs.org/projects/pacemaker/doc/3.0/Clusters_from_Scratch/html/index.html)
